@@ -1,262 +1,194 @@
-const express = require("express");
-const session = require("express-session");
-const bcrypt = require("bcryptjs");
-const pool = require("./database"); 
+const express = require('express');
+const bodyParser = require('body-parser');
+const session = require('express-session');
+const bcrypt = require('bcryptjs');
+const pool = require('./database');
+
 const app = express();
-
-app.use(express.urlencoded({ extended: true }));
-app.use(express.static("public"));
-app.use(
-  session({
-    secret: "secret",
+app.set('view engine', 'ejs');
+app.use(bodyParser.urlencoded({ extended: true }));
+app.use(express.static('public'));
+app.use(session({
+    secret: '1811',
     resave: false,
-    saveUninitialized: true,
-  })
-);
-app.set("view engine", "ejs");
-app.set("views", __dirname + "/views"); 
+    saveUninitialized: true
+}));
 
-
-function isAuthenticated(req, res, next) {
-  if (req.session.user) {
-    next();
-  } else {
-    res.redirect("/login");
-  }
+// Middleware to check if user is logged in
+function checkAuthenticated(req, res, next) {
+    if (req.session.user) {
+        return next();
+    }
+    res.redirect('/login');
 }
-app.use((req, res, next) => {
-  req.user = {
-    id: 1, 
-    name: 'John Doe'
-  };
-  next();
-});
-app.get("/", (req, res) => {
-  res.redirect("/dashboard");
-});
 
-
-app.get("/login", (req, res) => {
-  res.render("login");
-});
-
-app.post("/login", async (req, res) => {
-  const { email, password } = req.body;
-  try {
-    const result = await pool.query("SELECT * FROM users WHERE email = $1", [email]);
-    if (result.rows.length > 0) {
-      const user = result.rows[0];
-      const match = await bcrypt.compare(password, user.password);
-      if (match) {
-        req.session.user = user;
-        return res.redirect(user.role === "admin" ? "/admin-dashboard" : "/player-dashboard");
-      }
+// Middleware to check if user is admin
+function checkAdmin(req, res, next) {
+    if (req.session.user && req.session.user.role === 'admin') {
+        return next();
     }
-    res.redirect("/login");
-  } catch (error) {
-    console.error("Error during login:", error);
-    res.redirect("/login");
-  }
+    res.redirect('/login');
+}
+
+// Routes
+app.get('/', (req, res) => {
+    res.render('index');
 });
 
-app.get("/dashboard", (req, res) => {
-  res.render("dashboard", { user: req.session.user });
+app.get('/login', (req, res) => {
+    res.render('login');
 });
 
-app.get("/register", (req, res) => {
-  res.render("register");
+app.post('/login', async (req, res) => {
+    const { username, password } = req.body;
+    try {
+        const userResult = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
+        if (userResult.rows.length > 0) {
+            const user = userResult.rows[0];
+            const validPassword = await bcrypt.compare(password, user.password);
+            if (validPassword) {
+                req.session.user = {
+                    id: user.id,
+                    username: user.username,
+                    role: user.role
+                };
+
+                if (user.role === 'admin') {
+                    res.redirect('/admin-dashboard');
+                } else {
+                    res.redirect('/player-dashboard');
+                }
+                return;
+            }
+        }
+        res.render('login', { error: 'Invalid username or password' });
+    } catch (err) {
+        console.error(err);
+        res.render('login', { error: 'An error occurred. Please try again.' });
+    }
 });
 
-app.post("/register", async (req, res) => {
-  const { username, email, password, role } = req.body;  // Use 'username' instead of 'name'
-  try {
+app.get('/register', (req, res) => {
+    res.render('register');
+});
+
+app.post('/register', async (req, res) => {
+    const { username, password, role } = req.body;
     const hashedPassword = await bcrypt.hash(password, 10);
-    await pool.query(
-      "INSERT INTO users (username, email, password, role) VALUES ($1, $2, $3, $4)",
-      [username, email, hashedPassword, role]  // Make sure 'username' is passed instead of 'name'
-    );
-    res.redirect("/login");
-  } catch (error) {
-    console.error("Error during registration:", error);
-    res.redirect("/register");
-  }
-});
-app.get("/admin-dashboard", isAuthenticated, async (req, res) => {
-  try {
-    const sports = await pool.query("SELECT * FROM sports");
-    const sessions = await pool.query(
-      "SELECT sessions.*, sports.name AS sport_name, users.name AS creator_name " +
-      "FROM sessions " +
-      "JOIN sports ON sessions.sport_id = sports.id " +
-      "JOIN users ON sessions.creator_id = users.id"
-    );
-    res.render("admin-dashboard", {
-      user: req.session.user,
-      sports: sports.rows,
-      sessions: sessions.rows,
-    });
-  } catch (error) {
-    console.error("Error loading admin dashboard:", error);
-    res.redirect("/admin-dashboard");
-  }
-});
 
-app.post("/create-sport", isAuthenticated, async (req, res) => {
-  const { name } = req.body;
-  try {
-    await pool.query("INSERT INTO sports (name) VALUES ($1)", [name]);
-    res.redirect("/admin-dashboard");
-  } catch (error) {
-    console.error("Error creating sport:", error);
-    res.redirect("/admin-dashboard");
-  }
-});
-
-app.post("/delete-sport/:id", isAuthenticated, async (req, res) => {
-  const sportId = req.params.id;
-  try {
-    await pool.query("DELETE FROM sports WHERE id = $1", [sportId]);
-    res.sendStatus(200); 
-  } catch (error) {
-    console.error("Error deleting sport:", error);
-    res.status(500).send("Internal Server Error");
-  }
-});
-
-app.post("/delete-session/:session_id", isAuthenticated, async (req, res) => {
-  const sessionId = req.params.session_id;
-  try {
-    await pool.query("DELETE FROM sessions WHERE id = $1", [sessionId]);
-    res.redirect("/admin-dashboard");
-  } catch (error) {
-    console.error("Error deleting session:", error);
-    res.redirect("/admin-dashboard");
-  }
-});
-
-app.post("/edit-session", isAuthenticated, async (req, res) => {
-  try {
-    const { session_id, team1, team2, date, venue } = req.body;
-
-    
-    if (!session_id || !team1 || !team2 || !date || !venue) {
-      return res.status(400).send("All fields are required.");
+    try {
+        await pool.query('INSERT INTO users (username, password, role) VALUES ($1, $2, $3)', [username, hashedPassword, role]);
+        res.redirect('/login');
+    } catch (err) {
+        console.error(err);
+        res.render('register', { error: 'User already exists or invalid data' });
     }
-
-  
-    await pool.query(
-      "UPDATE sessions SET team1 = $1, team2 = $2, date = $3, venue = $4 WHERE id = $5",
-      [team1, team2, date, venue, session_id]
-    );
-
-    res.redirect("/admin-dashboard");
-  } catch (error) {
-    console.error("Error updating session:", error);
-    res.status(500).send("Failed to update session. Please try again later.");
-  }
 });
 
-app.get("/player-dashboard", isAuthenticated, async (req, res) => {
-  try {
-    const sessions = await pool.query(
-      "SELECT sessions.*, sports.name AS sport_name " +
-      "FROM sessions " +
-      "JOIN sports ON sessions.sport_id = sports.id"
-    );
-    const sports = await pool.query("SELECT * FROM sports");
-    res.render("player-dashboard", {
-      user: req.session.user,
-      sessions: sessions.rows,
-      sports: sports.rows,
+app.get('/admin-dashboard', checkAuthenticated, checkAdmin, async (req, res) => {
+    try {
+        const eventsResult = await pool.query('SELECT * FROM events');
+        res.render('admin-dashboard', { events: eventsResult.rows });
+    } catch (err) {
+        console.error(err);
+        res.render('admin-dashboard', { error: 'An error occurred. Please try again.' });
+    }
+});
+
+app.post('/admin-dashboard', checkAuthenticated, checkAdmin, async (req, res) => {
+    const { name, date, time, venue, team_limit, description } = req.body;
+    try {
+        await pool.query(
+            'INSERT INTO events (name, date, time, venue, team_limit, description, created_by) VALUES ($1, $2, $3, $4, $5, $6, $7)', 
+            [name, date, time, venue, team_limit, description, req.session.user.id]
+        );
+        res.redirect('/admin-dashboard');
+    } catch (err) {
+        console.error(err);
+        res.render('admin-dashboard', { error: 'An error occurred. Please try again.' });
+    }
+});
+
+app.get('/player-dashboard', checkAuthenticated, async (req, res) => {
+    try {
+        const eventsResult = await pool.query('SELECT * FROM events');
+        const joinedEventsResult = await pool.query('SELECT event_id FROM event_participants WHERE user_id = $1', [req.session.user.id]);
+        const joinedEventIds = joinedEventsResult.rows.map(row => row.event_id);
+        res.render('player-dashboard', { events: eventsResult.rows, joinedEventIds });
+    } catch (err) {
+        console.error(err);
+        res.render('player-dashboard', { error: 'An error occurred. Please try again.' });
+    }
+});
+
+app.post('/join-event', checkAuthenticated, async (req, res) => {
+    const { eventId } = req.body;
+    try {
+        await pool.query('INSERT INTO event_participants (event_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [eventId, req.session.user.id]);
+        res.redirect('/player-dashboard');
+    } catch (err) {
+        console.error(err);
+        res.render('player-dashboard', { error: 'An error occurred. Please try again.' });
+    }
+});
+
+app.get('/logout', (req, res) => {
+    req.session.destroy(err => {
+        if (err) {
+            return res.redirect('/');
+        }
+        res.clearCookie('sid');
+        res.redirect('/login');
     });
-  } catch (error) {
-    console.error("Error loading player dashboard:", error);
-    res.redirect("/player-dashboard");
-  }
 });
 
-app.post("/create-session", isAuthenticated, async (req, res) => {
-  const { sport_id, team1, team2, date, venue } = req.body;
-  try {
-    await pool.query(
-      "INSERT INTO sessions (sport_id, creator_id, team1, team2, date, venue) VALUES ($1, $2, $3, $4, $5, $6)",
-      [sport_id, req.session.user.id, team1, team2, date, venue]
-    );
-    res.redirect("/admin-dashboard");
-  } catch (error) {
-    console.error("Error creating session:", error);
-    res.redirect("/admin-dashboard");
-  }
+// Delete Event
+app.post('/delete-event', checkAuthenticated, checkAdmin, async (req, res) => {
+    const eventId = req.body.eventId;
+    try {
+        await pool.query('DELETE FROM events WHERE id = $1', [eventId]);
+        res.redirect('/admin-dashboard');
+    } catch (err) {
+        console.error(err);
+        res.redirect('/admin-dashboard', { error: 'An error occurred. Please try again.' });
+    }
 });
 
-
-app.post('/join-session', async (req, res) => {
-  const { session_id } = req.body;
-  const player_id = req.user.id;
-
-  console.log('Received session_id:', session_id, 'and player_id:', player_id);
-
-  if (!session_id) {
-    return res.status(400).json({ error: 'session_id is required' });
-  }
-
-  try {
-    const result = await pool.query(
-      'INSERT INTO session_players (session_id, player_id) VALUES ($1, $2) RETURNING *',
-      [session_id, player_id]
-    );
-
-    const sessionResult = await pool.query(
-      'SELECT * FROM sessions WHERE id = $1',
-      [session_id]
-    );
-    const session = sessionResult.rows[0];
-
-    const playersResult = await pool.query(
-      'SELECT users.name FROM session_players JOIN users ON session_players.player_id = users.id WHERE session_players.session_id = $1',
-      [session_id]
-    );
-    session.players = playersResult.rows.map(row => row.name);
-
-    res.json({ session });
-  } catch (error) {
-    console.error('Error joining session:', {
-      message: error.message,
-      stack: error.stack,
-      details: error
-    });
-    res.status(500).json({ error: 'Failed to join session' });
-  }
-});
-app.get("/logout", (req, res) => {
-  req.session.destroy();
-  res.redirect("/login");
+// Edit Event (Render Edit Form)
+app.get('/edit-event/:id', checkAuthenticated, checkAdmin, async (req, res) => {
+    const eventId = req.params.id;
+    try {
+        const event = await pool.query('SELECT * FROM events WHERE id = $1', [eventId]);
+        res.render('edit-event', { event: event.rows[0] });
+    } catch (err) {
+        console.error(err);
+        res.redirect('/admin-dashboard', { error: 'An error occurred. Please try again.' });
+    }
 });
 
-app.get("/reports", isAuthenticated, async (req, res) => {
-  try {
-    const sessions = await pool.query(
-      "SELECT sessions.*, sports.name AS sport_name " +
-      "FROM sessions " +
-      "JOIN sports ON sessions.sport_id = sports.id"
-    );
-    const popularity = await pool.query(
-      "SELECT sports.name, COUNT(sessions.id) AS count " +
-      "FROM sessions " +
-      "JOIN sports ON sessions.sport_id = sports.id " +
-      "GROUP BY sports.name"
-    );
-    res.render("reports", {
-      sessions: sessions.rows,
-      popularity: popularity.rows,
-    });
-  } catch (error) {
-    console.error("Error loading reports:", error);
-    res.redirect("/admin-dashboard");
-  }
+// Edit Event (Handle Form Submission)
+app.post('/edit-event/:id', checkAuthenticated, checkAdmin, async (req, res) => {
+    const eventId = req.params.id;
+    const { name, date, time, venue, team_limit, description } = req.body;
+    try {
+        await pool.query(
+            'UPDATE events SET name = $1, date = $2, time = $3, venue = $4, team_limit = $5, description = $6 WHERE id = $7',
+            [name, date, time, venue, team_limit, description, eventId]
+        );
+        res.redirect('/admin-dashboard');
+    } catch (err) {
+        console.error(err);
+        res.redirect('/admin-dashboard', { error: 'An error occurred. Please try again.' });
+    }
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Server is running on http://localhost:${PORT}`);
+// Redirect to Add Event Page
+app.get('/add-event', checkAuthenticated, checkAdmin, (req, res) => {
+    res.render('add-event');
 });
+
+app.listen(3000, () => {
+    console.log('Server is running on port 3000');
+});
+
+module.exports = app; // Ensure app is exported
