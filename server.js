@@ -14,7 +14,7 @@ app.use(session({
     saveUninitialized: true
 }));
 
-// Middleware to check if user is logged in
+// Middleware to check if user is logged in 
 function checkAuthenticated(req, res, next) {
     if (req.session.user) {
         return next();
